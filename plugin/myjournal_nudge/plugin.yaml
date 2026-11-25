@@ -1,0 +1,6 @@
+name: myjournal_nudge
+version: 1.0.0
+description: "Before each interactive turn, show the agent which MyJournal loops are due (read-only; the agent decides whether to bring one up)"
+kind: standalone
+provides_hooks:
+  - pre_llm_call
