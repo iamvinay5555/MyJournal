@@ -41,7 +41,7 @@ NOW_CAP = 10
 NOW_CHECKIN_DAYS = 3  # a confirm check-in stays askable this long
 MOODS = ("warm", "useful", "wait")
 STATUSES = ("open", "asked", "closed", "stale")
-OPEN_CAP = 15  # live actionable loops; the nudge still shows at most 3 per turn
+OPEN_CAP = 15  # live actionable loops; the nudge shows at most 1 per turn
 MAX_TEXT_CHARS = 4000
 ACTIONABLE_MOODS = ("warm", "useful")
 DEFAULT_TTL_DAYS = 14
@@ -53,8 +53,9 @@ REMINDER_GRACE_DAYS = 3
 # so a reminder for next month does not block this week's loops.
 CAP_HORIZON_DAYS = 7
 # An 'asked' loop that is still open comes back after this long, so a
-# multi-part plan is not silenced forever by one mention.
-ASK_RESURFACE_HOURS = 24
+# multi-part plan is not silenced forever by one mention. 72 h, not daily:
+# daily resurfacing felt like nagging; a week is too long for live errands.
+ASK_RESURFACE_HOURS = 72
 # Watchdog ping: a loop with ping=1 gets ONE proactive message at ask_after
 # (sent by the optional cron watchdog). Older than this and it is skipped
 # (stale ping); the chat nudge still carries it.
@@ -124,7 +125,8 @@ def now() -> datetime:
 
 
 def iso(dt: datetime | None = None) -> str:
-    return (dt or now()).isoformat()
+    # Always UTC, so stored strings compare correctly whatever offset the caller used.
+    return _utc(dt or now()).isoformat()
 
 
 def _utc(dt: datetime) -> datetime:
@@ -230,6 +232,18 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
         raise JournalError("connect requires an explicit path")
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Private notebook: the DB and its WAL/SHM sidecars are owner-only.
+    # SQLite creates sidecars with the main file's mode, so fix that first.
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.chmod(str(path) + suffix, 0o600)
+        except FileNotFoundError:
+            pass
     conn = sqlite3.connect(path, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -321,6 +335,11 @@ def add(
         loop = _row(existing)
         if loop.status in ("open", "asked"):
             raise JournalError(f"duplicate of {loop.id}")
+        # Reviving a closed/stale loop: keep the earlier episode in the history.
+        conn.execute(
+            "INSERT INTO loop_edits(loop_id,field,old,new,edited_at) VALUES(?, 'prior_episode', ?, NULL, ?)",
+            (loop.id, json.dumps(loop.to_dict(), ensure_ascii=False), iso()),
+        )
         conn.execute(
             "UPDATE loops SET kind=?, mood=?, text=?, why=?, source=?,"
             " reference_path=?,"
@@ -468,6 +487,9 @@ def edit(
 
     merged = {**loop.to_dict(), **changed}
     m_ask = _parse(merged["ask_after"]) if merged["ask_after"] else None
+    # Rescheduling an asked loop re-arms it for its new date.
+    if loop.status == "asked" and "ask_after" in changed and m_ask and m_ask > now():
+        changed.update(status="open", asked_at=None)
     # Undated loops carry ask_after == created_at; only a real future date
     # makes it a dated reminder, which must stay actionable (never wait).
     if merged["mood"] == "wait" and m_ask is not None and m_ask > _parse(loop.created_at):
@@ -540,7 +562,8 @@ def due(conn, when: datetime | None = None) -> list[Loop]:
     """Loops the agent may actually bring up. wait-mood never appears.
 
     Open loops are due once ask_after passes. An 'asked' loop that is still
-    live comes back ASK_RESURFACE_HOURS after it was last raised. Dated
+    live comes back ASK_RESURFACE_HOURS after it was last raised (never before
+    its own ask_after). Fresh open loops sort before resurfaced ones; dated
     reminders (ask_after later than creation) sort before undated ones.
     """
     when = when or now()
@@ -549,9 +572,10 @@ def due(conn, when: datetime | None = None) -> list[Loop]:
     rows = conn.execute(
         "SELECT * FROM loops WHERE mood != 'wait'"
         " AND (expires_at IS NULL OR expires_at > ?)"
-        " AND ((status = 'open' AND (ask_after IS NULL OR ask_after <= ?))"
+        " AND (ask_after IS NULL OR ask_after <= ?)"
+        " AND (status = 'open'"
         "   OR (status = 'asked' AND asked_at IS NOT NULL AND asked_at <= ?))"
-        " ORDER BY CASE WHEN ask_after IS NOT NULL AND ask_after > created_at"
+        " ORDER BY (status = 'asked'), CASE WHEN ask_after IS NOT NULL AND ask_after > created_at"
         "   THEN 0 ELSE 1 END,"
         " CASE mood WHEN 'warm' THEN 0 WHEN 'useful' THEN 1 ELSE 2 END,"
         " created_at ASC",
@@ -639,12 +663,17 @@ def sweep(conn, when: datetime | None = None) -> int:
         " AND expires_at IS NOT NULL AND expires_at <= ?",
         (stamp, stamp),
     )
-    conn.execute(
-        "UPDATE loops SET mood = 'useful', status = 'open', ask_after = ?, asked_at = NULL,"
-        " expires_at = ? WHERE kind = 'now' AND confirm = 1 AND mood = 'wait'"
-        " AND status IN ('open','asked') AND expires_at IS NOT NULL AND expires_at <= ?",
-        (stamp, iso(when + timedelta(days=NOW_CHECKIN_DAYS)), stamp),
-    )
+    # A --confirm line becomes a check-in for NOW_CHECKIN_DAYS from its own end,
+    # so a long absence does not raise a check-in about something long over.
+    for row in conn.execute(
+        "SELECT id, expires_at FROM loops WHERE kind='now' AND confirm=1 AND mood='wait'"
+        " AND status IN ('open','asked') AND expires_at > ? AND expires_at <= ?",
+        (iso(when - timedelta(days=NOW_CHECKIN_DAYS)), stamp),
+    ).fetchall():
+        deadline = _parse(row["expires_at"])
+        conn.execute("UPDATE loops SET mood='useful', status='open', ask_after=?, asked_at=NULL,"
+                     " expires_at=? WHERE id=?", (iso(deadline),
+                     iso(deadline + timedelta(days=NOW_CHECKIN_DAYS)), row["id"]))
     cur = conn.execute(
         "UPDATE loops SET status = 'stale', closed_at = ?, close_reason = 'expired'"
         " WHERE status IN ('open','asked') AND expires_at IS NOT NULL AND expires_at <= ?",
@@ -672,14 +701,14 @@ def find(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[Loop]:
     fts_query = " AND ".join(
         '"' + token.replace('"', '""') + '"*' for token in tokens
     )
-    id_query = f"%{_norm(query)}%"
+    id_query = _norm(query)  # literal substring, no LIKE wildcards
     rows = conn.execute(
         "SELECT * FROM ("
         " SELECT loops.* FROM loops_fts"
         " JOIN loops ON loops.rowid = loops_fts.rowid"
         " WHERE loops_fts MATCH ?"
         " UNION "
-        " SELECT loops.* FROM loops WHERE lower(loops.id) LIKE ?"
+        " SELECT loops.* FROM loops WHERE instr(lower(loops.id), ?) > 0"
         ") AS matches ORDER BY matches.created_at DESC LIMIT ?",
         (fts_query, id_query, int(limit)),
     ).fetchall()

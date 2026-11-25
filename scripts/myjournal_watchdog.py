@@ -2,9 +2,10 @@
 """MyJournal watchdog gate — optional Hermes cron pre-run script (e.g. every 5 min).
 
 Nothing due -> prints {"wakeAgent": false}: silent tick, no LLM call, no cost.
-Ping due    -> marks those loops pinged FIRST (at-most-once, so a crashed or
-               retried run can never double-message the user), then wakes the
-               cron agent with the loops so it can write ONE short reminder.
+Ping due    -> claims ONE due loop as pinged FIRST, inside a single write
+               transaction (at-most-once: a crashed, retried or overlapping run
+               can never double-message the user), then wakes the cron agent
+               with it so it can write ONE short reminder. Others wait a tick.
 
 The loops stay open after a ping; the chat nudge plugin keeps them alive until
 the agent closes them in conversation. Only loops added with --ping are sent.
@@ -24,12 +25,21 @@ from myjournal import journal as J  # noqa: E402
 
 def main() -> int:
     conn = J.connect(JOURNAL_HOME / "journal.db")
-    due = J.ping_due(conn)
-    if not due:
+    try:
+        # Check and claim in one write transaction, so two overlapping runs can
+        # never claim the same loop. One reminder per run; the rest stay armed
+        # for the next tick.
+        conn.execute("BEGIN IMMEDIATE")
+        due = J.ping_due(conn)[:1]
+        if due:
+            conn.execute("UPDATE loops SET pinged_at = ? WHERE id = ?", (J.iso(), due[0].id))
+        conn.commit()
+        pinged = [J.get(conn, loop.id) for loop in due]
+    finally:
+        conn.close()
+    if not pinged:
         print(json.dumps({"wakeAgent": False}))
         return 0
-    pinged = [J.mark_pinged(conn, loop.id) for loop in due]
-    conn.close()
     context = {
         "now_local": J.now().astimezone(J.LOCAL_TZ).strftime("%a %d %b %Y %H:%M %Z"),
         "loops_to_ping": [

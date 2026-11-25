@@ -201,6 +201,8 @@ def cmd_show(args) -> int:
         print(f"  asked:   {J.local(loop.asked_at, fmt)}")
     if loop.closed_at:
         print(f"  closed:  {J.local(loop.closed_at, fmt)} ({loop.close_reason})")
+    if args.current:
+        return 0
     hist = J.edits(conn, loop.id)
     if hist:
         print("  edits:")
@@ -341,6 +343,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sh = sub.add_parser("show", help="one loop in full, with its edit history")
     sh.add_argument("id")
+    sh.add_argument("--current", action="store_true",
+                    help="current fields only, without the edit history (quick read-back)")
     sh.set_defaults(fn=cmd_show)
 
     sub.add_parser("board", help="whole journal: right-now shelf, then due / asked / week / later / parked"

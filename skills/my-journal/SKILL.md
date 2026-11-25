@@ -1,7 +1,7 @@
 ---
 name: my-journal
 description: Use for open loops and reminders. Remember, ask, close.
-version: 1.1.0
+version: 1.2.0
 author: MyJournal contributors
 license: MIT
 metadata:
@@ -60,7 +60,8 @@ user (long-term memory), secrets, or as an excuse to message the user unprompted
   `mid_thread` (left unfinished), `care` (something kind to remember), `now` (temporary status).
 - Moods: `warm` (relationship / feeling), `useful` (practical), `wait` (remember only; never due).
 - Cap: 15 live `warm`/`useful` loops that are undated or due within 7 days; further-out
-  reminders don't take a slot and `wait` never counts. The nudge shows at most 3 per turn.
+  reminders don't take a slot and `wait` never counts. The nudge shows at most 1 per turn and
+  won't repeat the same one within 24 h, even in a new session.
 - Entries up to 4,000 chars plus an optional `--reference-path` to a longer Markdown note.
 - Default life: 14 days (`wait`: 120). Sweep marks unused past-expiry loops `stale`;
   closed and stale rows are never deleted and stay searchable.
@@ -79,7 +80,7 @@ python3 -m myjournal add --kind i_wonder --mood warm --text "..." --reference-pa
 python3 -m myjournal ask <id>         # the agent raised it in conversation
 python3 -m myjournal close <id> --reason done     # answered / done / obsolete / "merged into <id>"
 python3 -m myjournal edit <id> --text "..." [--ask-after ...] [--mood ...]   # in place, history kept
-python3 -m myjournal show <id>        # full loop + edit history
+python3 -m myjournal show <id>        # full loop + edit history (--current = fields only)
 python3 -m myjournal find <words>     # search everything, including closed/stale
 python3 -m myjournal history          # closed + stale
 python3 -m myjournal sweep
@@ -129,13 +130,17 @@ python3 -m myjournal edit <id> --until 2027-01-12                               
 5. After raising a loop: `ask <id>`. When it is done: `close <id> --reason ...`.
 6. After every `add`/`edit`/`close`, confirm in ONE line, e.g.
    `saved to journal — <id> <text>` / `closed in journal — <id> <text>`. Never save or close silently.
-7. Read back with `show <id>` before claiming a change landed.
+7. Read back with `show <id> --current` before claiming a change landed.
 8. Refine with `edit`, never a second `add`. Merge = `edit` the keeper + `close` the other with
    `--reason "merged into <id>"`. When the user corrects a time, update both the text and `--ask-after`.
 9. When work finishes or replaces an older plan, `find <topic>` and close what it obsoletes.
 10. When the user says something is done, close it right away. For "what's left?", read the live
     board and phrase likely-done items as candidates until the user confirms.
-11. An `asked` loop resurfaces in `due` 24 h after it was last asked, so multi-step plans are not lost.
+11. An `asked` loop resurfaces in `due` 72 h after it was last asked (never before its own
+    `--ask-after`; rescheduling re-arms it), so multi-step plans are not lost without daily nagging.
+12. Keep loop text to ONE line: the next action and its date (the nudge clips at ~220 chars).
+    Project status, IDs, queues and research go in a Markdown file linked with `--reference-path`.
+    Why: loops used as status dumps bury the reminder and drift out of date.
 
 ## Journal vs. casual talk
 

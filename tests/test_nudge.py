@@ -63,7 +63,7 @@ class NudgeTests(unittest.TestCase):
         J.mark_pinged(self.conn, loop.id)
         ctx, _ = self.nudge(session_id="s2")
         self.assertIn(loop.id, ctx)
-        self.assertIn("🔔 watchdog already pinged", ctx)
+        self.assertIn("🔔 watchdog claimed a ping", ctx)
 
     def test_dated_reminder_surfaces_later_mid_session(self):
         t0 = J.now()
@@ -90,12 +90,15 @@ class NudgeTests(unittest.TestCase):
         ctx3, st = self.nudge(when=t + timedelta(hours=N.RESHOW_HOURS + 1), state=st)
         self.assertIn(loop.id, ctx3)
 
-    def test_new_session_sees_it_again(self):
-        J.add(self.conn, kind="user_said", text="Call the bank")
+    def test_new_session_respects_cooldown_but_reschedule_shows(self):
+        loop = J.add(self.conn, kind="user_said", text="Call the bank")
         t = J.now()
         _, st = self.nudge(when=t)
-        ctx, _ = self.nudge(when=t + timedelta(minutes=1), session_id="s2", state=st)
-        self.assertIsNotNone(ctx)
+        ctx, st = self.nudge(when=t + timedelta(minutes=1), session_id="s2", state=st)
+        self.assertIsNone(ctx)  # same occurrence, new session: still quiet
+        J.edit(self.conn, loop.id, ask_after=t + timedelta(minutes=2))
+        ctx, _ = self.nudge(when=t + timedelta(minutes=3), session_id="s2", state=st)
+        self.assertIn(loop.id, ctx)  # a reschedule is a new occurrence
 
     def test_ineligible_surfaces_skip(self):
         J.add(self.conn, kind="user_said", text="Call the bank")

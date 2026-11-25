@@ -10,9 +10,12 @@ Contract:
     with the agent (``ask`` / ``close``).
   * Only interactive surfaces (MYJOURNAL_NUDGE_PLATFORMS, default telegram,cli).
     Skips subagents, kanban workers and single-query runs.
-  * Throttled: a given loop is shown at most once per session, and again only
-    after RESHOW_HOURS in a long-lived session. The injected text stays in that
-    turn's history, so the agent keeps seeing it afterwards.
+  * Optional owner gate: set MYJOURNAL_OWNER_SESSION_KEY to your own chat's
+    session key (e.g. agent:main:telegram:dm:<your id>) and messaging turns from
+    any other chat (groups, other users) get no journal context. CLI is unaffected.
+  * At most MAX_ITEMS (1) per turn. Throttled ACROSS sessions: the same dated
+    occurrence is not shown again for RESHOW_HOURS (a reschedule counts as new).
+    The injected text stays in that turn's history, so the agent keeps seeing it.
   * Fail-closed to silence: any error -> None, never blocks a reply.
 """
 from __future__ import annotations
@@ -40,11 +43,11 @@ ALLOWED_PLATFORMS = {
 }
 USER_NAME = os.environ.get("MYJOURNAL_USER_NAME", "").strip() or "the user"
 SCRIPTED_ENV = ("HERMES_KANBAN_TASK", "HERMES_SINGLE_QUERY_SESSION")
-MAX_ITEMS = 3
+MAX_ITEMS = 1
 MAX_TEXT = 220
-RESHOW_HOURS = 12
+RESHOW_HOURS = 24
 STATE_KEEP_DAYS = 14
-RESURFACE_HOURS = 24  # keep in step with myjournal.journal.ASK_RESURFACE_HOURS (parity-tested)
+RESURFACE_HOURS = 72  # keep in step with myjournal.journal.ASK_RESURFACE_HOURS (parity-tested)
 
 
 def _eligible(platform: str, parent_session_id: str) -> bool:
@@ -74,9 +77,10 @@ def _due_now(db: Path, when: datetime) -> list[dict]:
             "SELECT id, kind, mood, text, ask_after, pinged_at FROM loops"
             " WHERE mood != 'wait'"
             " AND (expires_at IS NULL OR expires_at > ?)"
-            " AND ((status = 'open' AND (ask_after IS NULL OR ask_after <= ?))"
+            " AND (ask_after IS NULL OR ask_after <= ?)"
+            " AND (status = 'open'"
             "   OR (status = 'asked' AND asked_at IS NOT NULL AND asked_at <= ?))"
-            " ORDER BY CASE WHEN ask_after IS NOT NULL AND ask_after > created_at"
+            " ORDER BY (status = 'asked'), CASE WHEN ask_after IS NOT NULL AND ask_after > created_at"
             "   THEN 0 ELSE 1 END,"
             " CASE mood WHEN 'warm' THEN 0 WHEN 'useful' THEN 1 ELSE 2 END,"
             " created_at ASC",
@@ -107,9 +111,9 @@ def _select(items: list[dict], state: dict, session_id: str, now_ts: float) -> l
     picked = []
     for item in items:
         seen = state.get(item["id"]) or {}
-        same_session = seen.get("session") == session_id
+        same_date = seen.get("due", item["ask_after"]) == item["ask_after"]
         fresh = now_ts - float(seen.get("at", 0)) < RESHOW_HOURS * 3600
-        if same_session and fresh:
+        if same_date and fresh:
             continue
         picked.append(item)
         if len(picked) >= MAX_ITEMS:
@@ -134,9 +138,9 @@ def _render(items: list[dict]) -> str:
         if it.get("pinged_at"):
             try:
                 at = datetime.fromisoformat(it["pinged_at"]).astimezone()
-                bell = f" [🔔 watchdog already pinged them {at:%a %H:%M}; follow up, don't re-announce]"
+                bell = f" [🔔 watchdog claimed a ping {at:%a %H:%M}; delivery unverified, don't re-announce]"
             except ValueError:
-                bell = " [🔔 watchdog already pinged them]"
+                bell = " [🔔 watchdog claimed a ping; delivery unverified]"
         lines.append(f"- {it['id']} ({it['kind']}/{it['mood']}){bell}: {text}")
     return "\n".join(lines)
 
@@ -157,13 +161,40 @@ def build_nudge(*, platform: str, session_id: str, parent_session_id: str = "",
     if not picked:
         return None, state
     for it in picked:
-        state[it["id"]] = {"session": session_id or "", "at": now_ts}
+        state[it["id"]] = {"session": session_id or "", "at": now_ts, "due": it["ask_after"]}
     return _render(picked), state
+
+
+OWNER_SESSION_KEY = os.environ.get("MYJOURNAL_OWNER_SESSION_KEY", "").strip()
+
+
+def _current_route() -> str:
+    from gateway.session_context import bound_session_key
+    return bound_session_key() or ""
+
+
+def _owner_route(platform: str) -> bool:
+    """With MYJOURNAL_OWNER_SESSION_KEY set, only the owner's own chat (and the CLI)
+    gets journal context. Skips are logged without content so a misconfigured key
+    is visible instead of silently muting the journal."""
+    if not OWNER_SESSION_KEY or platform.lower() == "cli":
+        return True
+    try:
+        key = _current_route()
+    except Exception as exc:
+        logger.warning("myjournal_nudge: route lookup failed (%s); skipping", type(exc).__name__)
+        return False
+    if key == OWNER_SESSION_KEY:
+        return True
+    logger.info("myjournal_nudge: skipped a non-owner %s route", platform or "unknown")
+    return False
 
 
 def _on_pre_llm_call(**kwargs):
     try:
         t0 = time.monotonic()
+        if not _owner_route(str(kwargs.get("platform") or "")):
+            return None
         context, new_state = build_nudge(
             platform=str(kwargs.get("platform") or ""),
             session_id=str(kwargs.get("session_id") or ""),

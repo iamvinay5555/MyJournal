@@ -66,11 +66,13 @@ reason, an optional `--reference-path` to a longer note, and an expiry.
   further out don't take a slot. This keeps the agent from becoming a nag.
 - **Dated reminders can't be `wait`** — a reminder that can never surface is a bug, so it's refused.
 - **Duplicates are refused** while the original is still live.
-- **Asked loops resurface after 24 h** if still open, so multi-step plans don't die after one mention.
+- **Asked loops resurface after 72 h** if still open (never before their own due date), so multi-step
+  plans don't die after one mention, without daily nagging.
 - **Dated reminders live 3 days past due**, so one quiet day doesn't silently lose them.
 - **Nothing is ever deleted.** Closed and expired (stale) loops stay searchable with full-text search.
-- **Every edit is logged** (`show <id>` prints the history).
-- The database is created with file mode `600`.
+- **Every edit is logged** (`show <id>` prints the history; `show <id> --current` skips it). Re-adding
+  a closed loop keeps its earlier episode in that history.
+- The database and its WAL/SHM sidecar files are created with file mode `600`.
 
 **Right now shelf** — `--kind now --until DATE` stores a quiet status line (own cap of 10). It never
 shows up as "due"; the agent just *knows* it. At `--until` it closes itself, or with `--confirm` it
@@ -127,6 +129,7 @@ Optionally, as a belt-and-braces reminder, add one line to your agent's instruct
 | `MYJOURNAL_TZ` | system time zone | CLI — IANA zone (e.g. `Europe/Berlin`) for times typed without an offset |
 | `MYJOURNAL_NUDGE_PLATFORMS` | `telegram,cli` | plugin — comma list of surfaces where due loops are shown |
 | `MYJOURNAL_USER_NAME` | `the user` | plugin — name used in the injected context line |
+| `MYJOURNAL_OWNER_SESSION_KEY` | unset | plugin — your own chat's session key (e.g. `agent:main:telegram:dm:<id>`); other chats get no journal context |
 
 All timestamps are stored in UTC and shown in your local zone, so DST changes and travel are safe.
 
@@ -190,9 +193,10 @@ The agent then tells you, in one line: `saved to journal — 3f9c1a2e Renew car 
 ## How the nudge plugin works
 
 On every interactive turn the plugin opens `journal.db` **read-only**, finds due loops (same rule as
-`myjournal due`), and adds a short block of context for the agent — at most 3 items, each trimmed —
+`myjournal due`), and adds a short block of context for the agent — one item per turn, trimmed —
 telling it to mention one only if it's time to act or relevant to what you just said, and how to
-`ask`/`close` it afterwards. It is throttled (once per session, again after 12 h in long sessions),
+`ask`/`close` it afterwards. It is throttled (the same reminder at most once per 24 h, even across
+sessions), can be limited to your own chat (`MYJOURNAL_OWNER_SESSION_KEY`),
 skips subagents, Kanban workers and cron, and fails silent on any error so it can never block a reply.
 
 Without the plugin, the agent only sees loops when it runs `board`/`due` itself.
@@ -201,8 +205,8 @@ Without the plugin, the agent only sees loops when it runs `board`/`due` itself.
 
 Only for loops added with `--ping` ("ping me at 3 pm even if I'm not chatting"). The watchdog is a
 Hermes cron **pre-run script**: when nothing is due it prints `{"wakeAgent": false}` and the tick costs
-nothing; when something is due it marks the loop pinged first (at-most-once) and wakes the cron agent
-with the loop details so it can write one short message. The loop stays open until you deal with it
+nothing; when something is due it claims one loop as pinged first (at-most-once, even if two runs
+overlap) and wakes the cron agent with the loop details so it can write one short message. The loop stays open until you deal with it
 in chat. A prompt template and schedule are in
 [`skills/my-journal/references/watchdog-and-nudge.md`](skills/my-journal/references/watchdog-and-nudge.md).
 
