@@ -1,7 +1,7 @@
 ---
 name: my-journal
 description: Use for open loops and reminders. Remember, ask, close.
-version: 1.0.0
+version: 1.1.0
 author: MyJournal contributors
 license: MIT
 metadata:
@@ -16,9 +16,32 @@ questions the agent wants to ask later, threads left unfinished, things to care 
 and short-lived "right now" facts. It is not a task manager and not long-term memory,
 and it never sends a message by itself.
 
+**This skill is meant to be loaded in EVERY session.** Install it under `skills.auto_load` in
+`~/.hermes/config.yaml` (see *Setup check* below); a journal the agent only reads sometimes
+misses reminders.
+
 Home: `${MYJOURNAL_HOME:-$HERMES_HOME/myjournal}` (default `~/.hermes/myjournal`).
 DB: `journal.db` in that folder (mode 600, SQLite WAL + FTS5 full-history search).
 Times typed without an offset are read in `MYJOURNAL_TZ` (IANA name) or the system zone; storage is UTC.
+
+## Setup check (first time, and whenever this skill was loaded by hand)
+
+1. Check that `my-journal` is listed under `skills.auto_load` in the active profile's
+   `config.yaml` (`hermes config show` or read the file). If it is missing, tell the user in one
+   line and **ask before editing**: auto-load means the skill is in every new session's prompt
+   (CLI, TUI, gateway, cron and API), which is what makes the journal reliable. On their yes, ADD
+   `my-journal` to the existing list, never replace other entries, then read the file back. It
+   takes effect from the next session (`/new` or a restart); never claim it is active sooner.
+2. Check the nudge plugin: `hermes plugins list` should show `myjournal_nudge` enabled. If not,
+   offer `hermes plugins enable myjournal_nudge` (also needs a restart). Optional but recommended.
+3. Never create the watchdog cron job unless the user asks for proactive pings.
+
+## Session start (mandatory)
+
+At the start of every new or reset session, and after context compaction, run
+`cd ~/.hermes/myjournal && python3 -m myjournal board` and **read** its output before the first
+reply. Obey its *Right now* block in every reply, keep *Due now* and *Next 7 days* in mind, and
+never print the board to the user unless they ask.
 
 ## When to Use
 
@@ -97,8 +120,8 @@ python3 -m myjournal edit <id> --until 2027-01-12                               
 
 ## How the agent behaves
 
-1. At session start (and after context compaction) run `board` and **read** it before the first
-   reply. "Silently" means don't print it to the user, never that you skip reading it.
+1. Run the *Session start* board check above; "silently" means don't print it to the user, never
+   that you skip reading it.
 2. Due items also arrive each turn through the `myjournal_nudge` plugin, if installed.
 3. Bring at most ONE due loop into a reply, in your own voice, and only when it is time to act
    or it relates to what the user just said. Never as a list; never tack plans onto unrelated replies.
@@ -140,4 +163,5 @@ Unsure? Ask once. A missed loop can be added later; a junk loop nags forever.
 - [ ] `python3 -m unittest discover -s tests` passes (in the repo checkout)
 - [ ] `python3 -m myjournal doctor` exits 0
 - [ ] `journal.db` is mode 600
+- [ ] `my-journal` is in `skills.auto_load` (and `myjournal_nudge` is enabled, if wanted)
 - [ ] No cron job exists unless the user asked for watchdog pings

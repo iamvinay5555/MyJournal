@@ -36,7 +36,17 @@ MyJournal installed.
   plugin  : $HERMES_HOME/plugins/myjournal_nudge   (disabled)
 
 Next steps:
-  1. hermes plugins enable myjournal_nudge     # optional, recommended
-  2. Restart your Hermes gateway / CLI session.
-  3. Tell your agent to read the my-journal skill and run 'board' at the start of each session.
+  1. REQUIRED: add my-journal to skills.auto_load in $HERMES_HOME/config.yaml (keep existing entries):
+       skills:
+         auto_load:
+           - my-journal
+  2. Recommended: hermes plugins enable myjournal_nudge
+  3. Restart your Hermes gateway, or start a new session (/new).
 EOF
+
+CONFIG="$HERMES_HOME/config.yaml"
+if [[ -f "$CONFIG" ]] && grep -Eq '^[[:space:]]*-[[:space:]]*my-journal[[:space:]]*$' "$CONFIG"; then
+  echo "✓ my-journal already appears in $CONFIG (check it is under skills.auto_load)."
+else
+  echo "! my-journal is NOT in $CONFIG yet — do step 1, or ask your agent to add it."
+fi

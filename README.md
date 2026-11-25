@@ -83,7 +83,7 @@ git clone https://github.com/iamvinay5555/MyJournal.git
 cd MyJournal
 ./install.sh                 # runs the tests, then copies files; enables nothing
 hermes plugins enable myjournal_nudge   # recommended
-# restart your gateway / CLI session
+# add my-journal to skills.auto_load in ~/.hermes/config.yaml (see below), then restart / start a new session
 ```
 
 This installs:
@@ -95,11 +95,29 @@ This installs:
 `./install.sh --watchdog` also copies the optional ping script to `~/.hermes/scripts/` — it does
 **not** create a cron job (see below).
 
-Then add one line to your agent's instructions (system prompt, SOUL.md or AGENTS.md):
+### Make it load every session (required)
+
+The journal only works if the agent reads its rules and the board **every** session, so pin the
+skill with Hermes's `skills.auto_load`. Add `my-journal` to the list in `~/.hermes/config.yaml`
+(keep any skills you already have there):
+
+```yaml
+skills:
+  auto_load:
+    - my-journal
+```
+
+Auto-loaded skills sit in the system prompt of every new session (CLI, TUI, gateway, cron and API),
+are never compacted away, and stay cache-friendly. Config edits apply from the next session, so
+start a new one (`/new`) or restart the gateway. The skill itself tells the agent to run
+`myjournal board` and read it before its first reply, and to check this setting and *ask you* before
+adding it if it's missing.
+
+Optionally, as a belt-and-braces reminder, add one line to your agent's instructions
+(`agent.system_prompt`, SOUL.md or AGENTS.md):
 
 > At the start of every session and after context compaction, run
-> `cd ~/.hermes/myjournal && python3 -m myjournal board` and read its output before your first
-> reply. Follow the `my-journal` skill for when to add, surface, ask and close loops.
+> `cd ~/.hermes/myjournal && python3 -m myjournal board` and read its output before your first reply.
 
 ### Configuration (environment variables, all optional)
 
@@ -209,7 +227,7 @@ MYJOURNAL_TZ=America/New_York python3 -m unittest discover -s tests   # time-zon
 Re-run `./install.sh` after `git pull`; your `journal.db` is left alone. To remove: delete
 `~/.hermes/myjournal/myjournal/`, `~/.hermes/plugins/myjournal_nudge/` and
 `~/.hermes/skills/productivity/my-journal/` (and `journal.db` if you want your loops gone too), then
-`hermes plugins disable myjournal_nudge`.
+`hermes plugins disable myjournal_nudge` and remove `my-journal` from `skills.auto_load`.
 
 ## License
 
